@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
 
 	jira "github.com/andygrunwald/go-jira"
-	"github.com/invopop/jsonschema"
 	"github.com/joho/godotenv"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/azure"
@@ -76,13 +76,22 @@ func searchJira(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatal("OpenAIクライアントの初期化に失敗しました:", err)
 	}
-	searchQuery := generateJiraQuery(client, query)
+	searchQuery, err := generateJiraQuery(client, query)
+	if err != nil {
+		log.Fatal("Jira検索クエリの生成に失敗しました:", err)
+	}
 
 	// Jira APIで検索クエリを実行
-	jiraResults := fetchJiraIssues(searchQuery)
+	jiraResults, err := fetchJiraIssues(searchQuery)
+	if err != nil {
+		log.Fatal("Jira APIの問い合わせに失敗しました:", err)
+	}
 
 	// 類似度に基づいて最も関連する3件を選択
-	selectedIssues := selectTopIssues(client, query, jiraResults)
+	selectedIssues, err := selectTopIssues(client, query, jiraResults)
+	if err != nil {
+		log.Fatal("Jira問い合わせの選択に失敗しました:", err)
+	}
 
 	// OpenAI APIを呼び出してサマリを生成
 	if err := generateSummary(client, selectedIssues); err != nil {
@@ -91,7 +100,14 @@ func searchJira(cmd *cobra.Command, args []string) {
 
 	fmt.Println("以下のJiraの問い合わせが見つかりました:")
 	for _, issue := range selectedIssues {
-		log.Printf("Jira ID: %s, URL: %s, 類似度: %f, サマリ: %s", issue.ID, issue.URL, issue.Similarity, issue.GeneratedSummary)
+		log.Printf(`
+
+
+Jira ID: %s
+URL: %s
+類似度: %f
+サマリ
+%s`, issue.ID, issue.URL, issue.Similarity, issue.GeneratedSummary)
 	}
 }
 
@@ -103,22 +119,16 @@ type JiraSimilarity struct {
 	Similarity float64 `json:"similarity"`
 }
 
-func generateSchema[T any]() interface{} {
-	// Structured Outputs uses a subset of JSON schema
-	// These flags are necessary to comply with the subset
-	reflector := jsonschema.Reflector{
-		AllowAdditionalProperties: false,
-		DoNotReference:            true,
-	}
-	var v T
-	schema := reflector.Reflect(v)
-	return schema
-}
-
 // Jiraの検索クエリを生成する関数
-func generateJiraQuery(client *openai.Client, query string) string {
+func generateJiraQuery(client *openai.Client, query string) (string, error) {
 	// OpenAI APIを呼び出してJira検索クエリを生成
-	prompt := fmt.Sprintf("あなたに渡す自然言語文字列に関連しそうなJiraのレコードを検索する検索クエリを生成してください。プロジェクトキーは:%sです。戻り値はjsonのsearch_queryにいれてください。\n問い合わせ内容: ```\n%s\n```",
+	prompt := fmt.Sprintf(`## 依頼内容
+あなたに渡す自然言語文字列に関連しそうなJiraのレコードを検索する検索クエリを生成してください。
+プロジェクトキーは:%sです。
+戻り値はjsonのsearch_queryにいれてください。
+
+## 問い合わせ内容
+%s`,
 		os.Getenv("JIRA_PROJECT_KEY"),
 		query)
 
@@ -135,7 +145,7 @@ func generateJiraQuery(client *openai.Client, query string) string {
 	})
 
 	if err != nil {
-		log.Fatal("OpenAI API呼び出しに失敗しました:", err)
+		return "", fmt.Errorf("OpenAI API呼び出しに失敗しました: %w", err)
 	}
 
 	var searchQuery struct {
@@ -143,14 +153,14 @@ func generateJiraQuery(client *openai.Client, query string) string {
 	}
 	err = json.Unmarshal([]byte(response.Choices[0].Message.Content), &searchQuery)
 	if err != nil {
-		log.Fatal("OpenAI APIのレスポンス解析に失敗しました:", err)
+		return "", fmt.Errorf("OpenAI APIのレスポンス解析に失敗しました: %w", err)
 	}
-	log.Printf("Jira検索クエリ: %s", searchQuery.SearchQuery)
-	return searchQuery.SearchQuery
+	slog.Debug("Jira検索クエリ", slog.String("search_query", searchQuery.SearchQuery))
+	return searchQuery.SearchQuery, nil
 }
 
 // Jira APIで問い合わせを検索する関数
-func fetchJiraIssues(query string) []jira.Issue {
+func fetchJiraIssues(query string) ([]jira.Issue, error) {
 
 	tp := jira.BasicAuthTransport{
 		Username: os.Getenv("JIRA_USERNAME"),
@@ -158,42 +168,55 @@ func fetchJiraIssues(query string) []jira.Issue {
 	}
 
 	jiraClient, _ := jira.NewClient(tp.Client(), os.Getenv("JIRA_ENDPOINT"))
-
-	issues, _, err := jiraClient.Issue.Search(query, nil)
+	issues, _, err := jiraClient.Issue.Search(query, &jira.SearchOptions{
+		Fields: []string{
+			"summary",
+			"description",
+			"comment",
+		},
+	})
 	if err != nil {
-		log.Fatal("Jira API呼び出しに失敗しました:", err)
+		return nil, fmt.Errorf("Jira APIの問い合わせに失敗しました: %w", err)
 	}
 
-	return issues
+	return issues, nil
 }
 
-// issueの内容から、descriptionとサマリとコメントを整形して返却する
 func formatIssue(issue jira.Issue) string {
-	// コメントは誰が書いたか、いつ書かれたか、内容を表示
 	var comments []string
 	if issue.Fields.Comments != nil {
 		for _, comment := range issue.Fields.Comments.Comments {
-			comments = append(comments, fmt.Sprintf("コメント: %s, %s, %s", comment.Author.DisplayName, comment.Created, comment.Body))
+			comments = append(comments, fmt.Sprintf(`
+### 作成日時:%s
+- 作成者:%s
+- 内容:%s`, comment.Created, comment.Author.DisplayName, comment.Body))
 		}
 	}
-	return fmt.Sprintf("概要: %s\n詳細: %s\nコメント: %s", issue.Fields.Summary, issue.Fields.Description, strings.Join(comments, "\n"))
+	return fmt.Sprintf(`## 概要
+%s
+## 詳細
+%s
+## コメントの履歴
+%s`, issue.Fields.Summary, issue.Fields.Description, strings.Join(comments, "\n"))
 }
 
 // Jiraの問い合わせから最も類似している3件を選択する関数
-func selectTopIssues(client *openai.Client, query string, issues []jira.Issue) []JiraIssue {
+func selectTopIssues(client *openai.Client, query string, issues []jira.Issue) ([]JiraIssue, error) {
 
-	convIsssues := make([]JiraIssue, len(issues))
+	jiraendpoint := strings.TrimSuffix(os.Getenv("JIRA_ENDPOINT"), "/")
+	convIssues := []JiraIssue{}
 	for i := range issues {
-		convIsssues[i] = JiraIssue{
-			ID:             issues[i].ID,
-			Summary:        issues[i].Fields.Summary,
-			Description:    issues[i].Fields.Description,
-			URL:            issues[i].Self,
-			ContentSummary: formatIssue(issues[i]),
-		}
+		contentSummary := formatIssue(issues[i])
 
 		// 各Jira問い合わせの内容をOpenAIに送り、関連度を算出
-		prompt := fmt.Sprintf("以下のJira問い合わせの内容は、今私が作成しようとしている問い合わせとどれだけ類似していますか？類似度をjsonのsimilariyというfloat型で返却してください\n私が問い合わせたい内容:```\n%s\n```\n過去に作成された課題の内容: ```\n%s\n```", query, convIsssues[i].ContentSummary)
+		prompt := fmt.Sprintf(`## 依頼内容
+以下のJira課題の内容は、今私が作成しようとしている課題とどれだけ類似していますか？
+類似度をjsonのsimilariyというfloat型で返却してください
+
+## 私が作成したい課題の内容
+%s
+## 過去に作成された課題の内容
+%s`, query, contentSummary)
 
 		response, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 			Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
@@ -208,7 +231,7 @@ func selectTopIssues(client *openai.Client, query string, issues []jira.Issue) [
 		})
 
 		if err != nil {
-			log.Fatal("OpenAI API呼び出しに失敗しました:", err)
+			return nil, err
 		}
 
 		var similarity struct {
@@ -216,28 +239,49 @@ func selectTopIssues(client *openai.Client, query string, issues []jira.Issue) [
 		}
 		err = json.Unmarshal([]byte(response.Choices[0].Message.Content), &similarity)
 		if err != nil {
-			log.Printf("OpenAI APIのレスポンス: %s", response.Choices[0].Message.Content)
-			log.Fatal("OpenAI APIのレスポンス解析に失敗しました:", err)
+			return nil, fmt.Errorf("OpenAI APIのレスポンス解析に失敗しました: %w", err)
 		}
-		convIsssues[i].Similarity = similarity.Similarity
+
+		// 類似度が0.5以下のものは削除
+		if similarity.Similarity < 0.5 {
+			continue
+		}
+
+		convIssues = append(convIssues, JiraIssue{
+			ID:             issues[i].ID,
+			Summary:        issues[i].Fields.Summary,
+			Description:    issues[i].Fields.Description,
+			URL:            fmt.Sprintf("%s/browse/%s", jiraendpoint, issues[i].Key),
+			ContentSummary: contentSummary,
+			Similarity:     similarity.Similarity,
+		})
 	}
 
 	// 類似度でソート
-	sort.Slice(issues, func(i, j int) bool {
-		return convIsssues[i].Similarity > convIsssues[j].Similarity
+	sort.Slice(convIssues, func(i, j int) bool {
+		return convIssues[i].Similarity > convIssues[j].Similarity
 	})
 
 	// 最も関連度が高い3件を選択
-	if len(convIsssues) < 3 {
-		return convIsssues
+	if len(convIssues) < 3 {
+		return convIssues, nil
 	}
-	return convIsssues[:3]
+	return convIssues[:3], nil
 }
 
 // OpenAI APIを呼び出してサマリを生成する関数
 func generateSummary(client *openai.Client, issues []JiraIssue) error {
 	for i, issue := range issues {
-		prompt := fmt.Sprintf("以下のJiraの問い合わせ内容と、課題の解決内容(主にコメントとして記載されている)の結果をサマリとして自然言語で返答してください。あなたが作成した結果の用途は新しく課題をjiraに作成するかどうかを判断するためなので簡潔に類似かどうか判断できる材料をください。 過去に作成された課題: %s", issue.ContentSummary)
+		prompt := fmt.Sprintf(`## 依頼内容
+以下のJiraの課題の内容と、その課題の解決方法(主にコメントとして記載されている)の結果をサマリとして自然言語で返答してください。
+あなたが作成した結果の用途は新しく課題をjiraに作成するかどうかを判断するためなので簡潔に類似かどうか判断できる材料をください。
+
+## フォーマットの指定：
+- 課題の概要を200文字
+- 課題の解決結果を200文字
+
+## 過去に作成された課題
+%s`, issue.ContentSummary)
 
 		response, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 			Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
