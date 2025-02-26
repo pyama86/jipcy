@@ -8,13 +8,16 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	jira "github.com/andygrunwald/go-jira"
 	"github.com/joho/godotenv"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/azure"
 	"github.com/openai/openai-go/option"
+	"github.com/slack-go/slack"
 	"github.com/spf13/cobra"
 )
 
@@ -62,6 +65,7 @@ type JiraIssue struct {
 	Similarity       float64
 	ContentSummary   string `json:"content_summary"`
 	GeneratedSummary string `json:"generated_summary"`
+	SlackThread      string `json:"slack_thread"`
 }
 
 // コマンドライン引数を処理する関数
@@ -123,8 +127,9 @@ type JiraSimilarity struct {
 func generateJiraQuery(client *openai.Client, query string) (string, error) {
 	// OpenAI APIを呼び出してJira検索クエリを生成
 	prompt := fmt.Sprintf(`## 依頼内容
-あなたに渡す自然言語文字列に関連しそうなJiraのレコードを検索する検索クエリを生成してください。
+あなたに渡す自然言語文字列に関連しそうなJiraの課題を検索する検索クエリを生成してください。
 プロジェクトキーは:%sです。
+安定して検索したいので検索ワード以外のオプションは指定しないでください。
 戻り値はjsonのsearch_queryにいれてください。
 
 ## 問い合わせ内容
@@ -155,7 +160,7 @@ func generateJiraQuery(client *openai.Client, query string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("OpenAI APIのレスポンス解析に失敗しました: %w", err)
 	}
-	slog.Debug("Jira検索クエリ", slog.String("search_query", searchQuery.SearchQuery))
+	slog.Info("Jira検索クエリ", slog.String("search_query", searchQuery.SearchQuery))
 	return searchQuery.SearchQuery, nil
 }
 
@@ -174,6 +179,7 @@ func fetchJiraIssues(query string) ([]jira.Issue, error) {
 			"description",
 			"comment",
 		},
+		MaxResults: 10,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("Jira APIの問い合わせに失敗しました: %w", err)
@@ -202,11 +208,16 @@ func formatIssue(issue jira.Issue) string {
 
 // Jiraの問い合わせから最も類似している3件を選択する関数
 func selectTopIssues(client *openai.Client, query string, issues []jira.Issue) ([]JiraIssue, error) {
-
 	jiraendpoint := strings.TrimSuffix(os.Getenv("JIRA_ENDPOINT"), "/")
 	convIssues := []JiraIssue{}
 	for i := range issues {
 		contentSummary := formatIssue(issues[i])
+		jiraURL := fmt.Sprintf("%s/browse/%s", jiraendpoint, issues[i].Key)
+
+		slackThreadMessages, err := formattedSearchThreads(jiraURL)
+		if err != nil {
+			return nil, fmt.Errorf("スレッド検索に失敗しました: %w", err)
+		}
 
 		// 各Jira問い合わせの内容をOpenAIに送り、関連度を算出
 		prompt := fmt.Sprintf(`## 依頼内容
@@ -216,7 +227,10 @@ func selectTopIssues(client *openai.Client, query string, issues []jira.Issue) (
 ## 私が作成したい課題の内容
 %s
 ## 過去に作成された課題の内容
-%s`, query, contentSummary)
+%s
+
+## 関連するSlackのスレッド
+%s`, query, contentSummary, slackThreadMessages)
 
 		response, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 			Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
@@ -251,9 +265,10 @@ func selectTopIssues(client *openai.Client, query string, issues []jira.Issue) (
 			ID:             issues[i].ID,
 			Summary:        issues[i].Fields.Summary,
 			Description:    issues[i].Fields.Description,
-			URL:            fmt.Sprintf("%s/browse/%s", jiraendpoint, issues[i].Key),
+			URL:            jiraURL,
 			ContentSummary: contentSummary,
 			Similarity:     similarity.Similarity,
+			SlackThread:    slackThreadMessages,
 		})
 	}
 
@@ -277,11 +292,14 @@ func generateSummary(client *openai.Client, issues []JiraIssue) error {
 あなたが作成した結果の用途は新しく課題をjiraに作成するかどうかを判断するためなので簡潔に類似かどうか判断できる材料をください。
 
 ## フォーマットの指定：
-- 課題の概要を200文字
-- 課題の解決結果を200文字
+- 課題の概要を300文字
+- 課題の解決結果を300文字
 
 ## 過去に作成された課題
-%s`, issue.ContentSummary)
+%s
+
+## 関連するSlackのスレッド
+%s`, issue.ContentSummary, issue.SlackThread)
 
 		response, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 			Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
@@ -300,6 +318,112 @@ func generateSummary(client *openai.Client, issues []JiraIssue) error {
 	return nil
 }
 
+type ThreadMessage struct {
+	Timestamp time.Time
+	User      string
+	Text      string
+}
+
+func formattedSearchThreads(keyword string) (string, error) {
+	threads, err := searchThreads(keyword)
+	if err != nil {
+		return "", fmt.Errorf("スレッド検索に失敗しました: %w", err)
+	}
+
+	var formattedThreads []string
+	for _, thread := range threads {
+		formattedThreads = append(formattedThreads, fmt.Sprintf(`
+### 作成日時:%s
+- 作成者:%s
+- 内容:%s`, thread.Timestamp, thread.User, thread.Text))
+	}
+	return strings.Join(formattedThreads, "\n"), nil
+}
+
+func searchThreads(keyword string) ([]ThreadMessage, error) {
+	// 環境変数から Slack API Token を取得
+	token := os.Getenv("SLACK_API_TOKEN")
+	if token == "" {
+		return nil, nil
+	}
+
+	client := slack.New(token)
+
+	searchResult, err := client.SearchMessages(keyword, slack.SearchParameters{
+		Count:         10,
+		Sort:          "score",
+		SortDirection: "desc",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("slackメッセージ検索に失敗しました: %w", err)
+	}
+
+	visitedThreads := make(map[string]bool)
+	var allThreadMessages []ThreadMessage
+
+	for _, match := range searchResult.Matches {
+		channelID := match.Channel.ID
+
+		history, err := client.GetConversationHistory(&slack.GetConversationHistoryParameters{
+			ChannelID: channelID,
+			Inclusive: true,
+			Latest:    match.Timestamp,
+			Limit:     1,
+			Oldest:    match.Timestamp,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("メッセージ履歴取得に失敗しました (channel=%s, ts=%s): %w",
+				channelID, match.Timestamp, err)
+		}
+		if len(history.Messages) == 0 {
+			continue
+		}
+
+		parentMsg := history.Messages[0]
+		var parentTS string
+		// スレッドの場合は親メッセージのタイムスタンプを取得
+		if parentMsg.ThreadTimestamp != "" {
+			parentTS = parentMsg.ThreadTimestamp
+		} else {
+			parentTS = parentMsg.Timestamp
+		}
+
+		threadKey := channelID + ":" + parentTS
+		if visitedThreads[threadKey] {
+			continue
+		}
+		visitedThreads[threadKey] = true
+
+		replies, _, _, err := client.GetConversationReplies(&slack.GetConversationRepliesParameters{
+			ChannelID: channelID,
+			Timestamp: parentTS,
+			Inclusive: true,
+			Limit:     100,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("スレッド取得に失敗しました (channel=%s, parentTS=%s): %w",
+				channelID, parentTS, err)
+		}
+
+		for _, msg := range replies {
+			userName := msg.User
+			tsFloat, parseErr := strconv.ParseFloat(msg.Timestamp, 64)
+			if parseErr != nil {
+				tsFloat = float64(time.Now().Unix())
+			}
+			msgTime := time.Unix(int64(tsFloat), 0)
+
+			allThreadMessages = append(allThreadMessages, ThreadMessage{
+				Timestamp: msgTime,
+				User:      userName,
+				Text:      msg.Text,
+			})
+		}
+	}
+
+	return allThreadMessages, nil
+}
+
 func main() {
 	// 環境変数のロード
 	err := godotenv.Load()
@@ -307,6 +431,9 @@ func main() {
 		log.Fatal("Error loading .env file")
 	}
 
+	if os.Getenv("SLACK_API_TOKEN") == "" {
+		slog.Warn("SLACK_API_TOKEN is not set")
+	}
 	// コマンドラインツールのセットアップ
 	var rootCmd = &cobra.Command{Use: "jipcy"}
 	rootCmd.Run = searchJira
