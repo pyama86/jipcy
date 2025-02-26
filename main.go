@@ -130,6 +130,7 @@ func generateJiraQuery(client *openai.Client, query string) (string, error) {
 あなたに渡す自然言語文字列に関連しそうなJiraの課題を検索する検索クエリを生成してください。
 プロジェクトキーは:%sです。
 安定して検索したいので検索ワード以外のオプションは指定しないでください。
+AND条件は適切に利用してください。理由はAND条件が多すぎると問い合わせが限定されすぎてしまうためです。
 戻り値はjsonのsearch_queryにいれてください。
 
 ## 問い合わせ内容
