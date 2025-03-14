@@ -127,6 +127,16 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 	}
 
 	var lastError error
+	// 虚無に話しかけてるみたいになるのでメッセージを応答する
+	if _, _, err := h.slackClient.PostMessage(
+		channelID,
+		slack.MsgOptionText(":white_check_mark: *お問い合わせを受け付けました！*\n以降はあなただけに返信します。:sparkles:", false),
+		slack.MsgOptionTS(event.TimeStamp),
+	); err != nil {
+		slog.Error("Failed to post message", slog.Any("err", err))
+		return
+	}
+
 	// 1. 処理開始の通知
 	{
 		blocks := []slack.Block{
