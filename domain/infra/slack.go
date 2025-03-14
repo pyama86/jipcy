@@ -12,9 +12,8 @@ import (
 )
 
 type Slack struct {
-	client             *slack.Client
-	channelInfoCache   *ttlcache.Cache[string, *slack.Channel]
-	conversationsCache *ttlcache.Cache[string, *slack.Conversation]
+	client           *slack.Client
+	channelInfoCache *ttlcache.Cache[string, *slack.Channel]
 }
 
 func NewSlack() *Slack {
