@@ -31,15 +31,13 @@ func validate() {
 
 func main() {
 	// check exists .env
-	if _, err := os.Stat(".env"); os.IsNotExist(err) {
-		slog.Error("not found .env file")
-		os.Exit(1)
+	if _, err := os.Stat(".env"); err == nil {
+		err := godotenv.Load()
+		if err != nil {
+			log.Fatal("Error loading .env file")
+		}
 	}
 
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
 	validate()
 	slack := infra.NewSlack()
 
