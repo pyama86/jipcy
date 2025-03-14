@@ -57,11 +57,7 @@ func main() {
 
 	h := handler.NewHandler(slack, jira, openAI)
 
-	bind := ":3000"
-	if os.Getenv("LISTEN_SOCKET") != "" {
-		bind = os.Getenv("LISTEN_SOCKET")
-	}
-	slog.Info("Server listening", slog.String("bind", bind))
+	slog.Info("Server started")
 	if err := h.Handle(); err != nil {
 		slog.Error("Server failed", slog.Any("err", err))
 		os.Exit(1)

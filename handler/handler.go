@@ -121,6 +121,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 
 		if channelInfo.Name != allowedChannel {
 			h.postError(channelID, userID, "このチャンネルでは応答しません。", event.TimeStamp)
+			return
 		}
 		slog.Info("Allowed channel", slog.String("channel", channelInfo.Name))
 	}
