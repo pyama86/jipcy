@@ -205,6 +205,18 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 		return
 	}
 
+	if len(issues) == 0 {
+		if _, err := h.slackClient.PostEphemeral(
+			channelID,
+			userID,
+			slack.MsgOptionText(":white_check_mark: *Jira問い合わせ結果*\n該当する問い合わせが見つかりませんでした。", false),
+		); err != nil {
+			slog.Error("Failed to post message", slog.Any("err", err))
+			return
+		}
+		return
+	}
+
 	// 5. Jira問い合わせ結果の通知
 	{
 		blocks := []slack.Block{
@@ -213,7 +225,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 			),
 			slack.NewDividerBlock(),
 			slack.NewSectionBlock(
-				slack.NewTextBlockObject("mrkdwn", fmt.Sprintf("Jira問い合わせ結果: *%d件*です。解析を開始します。しばらくお待ち下さい。", len(issues)), false, false),
+				slack.NewTextBlockObject("mrkdwn", fmt.Sprintf("Jira問い合わせ結果: %d件です。解析を開始します。しばらくお待ち下さい。", len(issues)), false, false),
 				nil, nil,
 			),
 		}
