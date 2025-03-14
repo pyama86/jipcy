@@ -37,7 +37,8 @@ func (h *Slack) FormattedSearchThreads(threads []model.ThreadMessage) (string, e
 
 func (h *Slack) SearchThreads(keyword, channelID string) ([]model.ThreadMessage, error) {
 	if os.Getenv("SLACK_CHANNEL") != "" {
-		keyword = fmt.Sprintf("in:#%s %s", channelID, keyword)
+		slackChannel := strings.TrimPrefix(os.Getenv("SLACK_CHANNEL"), "#")
+		keyword = fmt.Sprintf("in:#%s %s", slackChannel, keyword)
 	}
 
 	searchResult, err := h.client.SearchMessages(keyword, slack.SearchParameters{

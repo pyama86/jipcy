@@ -248,6 +248,18 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 		return
 	}
 
+	if len(selectedIssues) == 0 {
+		if _, err := h.slackClient.PostEphemeral(
+			channelID,
+			userID,
+			slack.MsgOptionText(":white_check_mark: *Jira問い合わせ結果*\n類似度の高い問い合わせが見つかりませんでした。", false),
+		); err != nil {
+			slog.Error("Failed to post message", slog.Any("err", err))
+			return
+		}
+		return
+	}
+
 	// 7. 要約生成の実行
 	if err := h.openAI.GenerateSummary(selectedIssues); err != nil {
 		slog.Error("Failed to generate summary", slog.Any("err", err))
