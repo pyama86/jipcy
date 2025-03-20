@@ -18,10 +18,12 @@ type Slack struct {
 
 func NewSlack() *Slack {
 	api := slack.New(os.Getenv("SLACK_USER_TOKEN"))
-	return &Slack{
+	s := &Slack{
 		client:           api,
 		channelInfoCache: ttlcache.New(ttlcache.WithTTL[string, *slack.Channel](time.Hour * 24)),
 	}
+	go s.channelInfoCache.Start()
+	return s
 }
 
 func (h *Slack) FormattedSearchThreads(threads []model.ThreadMessage) (string, error) {
