@@ -102,6 +102,7 @@ func (h *OpenAI) GenerateJiraQuery(query string, lastError error) (string, error
 プロジェクトキーは:%sです。
 安定して検索したいので検索ワード以外のオプションは指定しないでください。
 検索クエリについてはあまり具体すぎると検索結果が少なくなるので、ANDを控えて検索結果が多い程度にお願いします。
+エラーコードのような英数字の文字列は切り出してそれ単体でキーワードにしてください。
 %s
 戻り値はjsonのsearch_queryにいれてください。
 
