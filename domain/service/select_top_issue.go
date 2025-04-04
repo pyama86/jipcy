@@ -93,8 +93,8 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []jira.Issu
 	})
 
 	// 最も関連度が高い3件を選択
-	if len(convIssues) < 3 {
+	if len(convIssues) < 5 {
 		return convIssues, nil
 	}
-	return convIssues[:3], nil
+	return convIssues[:5], nil
 }
