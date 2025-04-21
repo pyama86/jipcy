@@ -162,7 +162,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 	}
 	var issues []jira.Issue
 	// 2. Jira検索クエリの生成
-	err := retry.Retry(3, 1*time.Second, func() error {
+	err := retry.Retry(5, 1*time.Second, func() error {
 		jiraQuery, err := h.openAI.GenerateJiraQuery(messageText, lastError)
 		if err != nil {
 			slog.Error("Failed to generate Jira query", slog.Any("err", err))
