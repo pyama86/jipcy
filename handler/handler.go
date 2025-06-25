@@ -91,6 +91,7 @@ func (h *Handler) postError(channelID, userID, message, ts string) {
 		channelID,
 		slack.MsgOptionBlocks(blocks...),
 		slack.MsgOptionTS(ts),
+		slack.MsgOptionLinkNames(false),
 	); err != nil {
 		slog.Error("Failed to post message", slog.Any("err", err))
 	}
@@ -131,6 +132,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 		channelID,
 		slack.MsgOptionText(":white_check_mark: *お問い合わせを受け付けました！*\nしばらくお待ち下さい。", false),
 		slack.MsgOptionTS(event.TimeStamp),
+		slack.MsgOptionLinkNames(false),
 	); err != nil {
 		slog.Error("Failed to post message", slog.Any("err", err))
 		return
@@ -152,6 +154,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 			channelID,
 			slack.MsgOptionBlocks(blocks...),
 			slack.MsgOptionTS(event.TimeStamp),
+			slack.MsgOptionLinkNames(false),
 		); err != nil {
 			slog.Error("Failed to post message", slog.Any("err", err))
 			return
@@ -182,6 +185,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 				channelID,
 				slack.MsgOptionBlocks(blocks...),
 				slack.MsgOptionTS(event.TimeStamp),
+				slack.MsgOptionLinkNames(false),
 			); err != nil {
 				slog.Error("Failed to post message", slog.Any("err", err))
 				return err
@@ -209,6 +213,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 			channelID,
 			slack.MsgOptionText(":white_check_mark: *Jira問い合わせ結果*\n該当する問い合わせが見つかりませんでした。", false),
 			slack.MsgOptionTS(event.TimeStamp),
+			slack.MsgOptionLinkNames(false),
 		); err != nil {
 			slog.Error("Failed to post message", slog.Any("err", err))
 			return
@@ -232,6 +237,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 			channelID,
 			slack.MsgOptionBlocks(blocks...),
 			slack.MsgOptionTS(event.TimeStamp),
+			slack.MsgOptionLinkNames(false),
 		); err != nil {
 			slog.Error("Failed to post message", slog.Any("err", err))
 			return
@@ -252,6 +258,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 			channelID,
 			slack.MsgOptionText(":white_check_mark: *Jira問い合わせ結果*\n類似度の高い問い合わせが見つかりませんでした。", false),
 			slack.MsgOptionTS(event.TimeStamp),
+			slack.MsgOptionLinkNames(false),
 		); err != nil {
 			slog.Error("Failed to post message", slog.Any("err", err))
 			return
@@ -309,6 +316,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 			channelID,
 			slack.MsgOptionBlocks(blocks...),
 			slack.MsgOptionTS(event.TimeStamp),
+			slack.MsgOptionLinkNames(false),
 		); err != nil {
 			slog.Error("Failed to post message", slog.Any("err", err))
 		}

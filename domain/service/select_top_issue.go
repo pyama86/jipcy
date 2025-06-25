@@ -29,10 +29,12 @@ func formatIssue(issue jira.Issue) string {
 	var comments []string
 	if issue.Fields.Comments != nil {
 		for _, comment := range issue.Fields.Comments.Comments {
+			// メンション防止のため包括的な変換を適用
+			authorName := strings.ReplaceAll(comment.Author.DisplayName, "@", "＠")
 			comments = append(comments, fmt.Sprintf(`
 ### 作成日時:%s
 - 作成者:%s
-- 内容:%s`, comment.Created, comment.Author.DisplayName, comment.Body))
+- 内容:%s`, comment.Created, authorName, comment.Body))
 		}
 	}
 	return fmt.Sprintf(`## 概要

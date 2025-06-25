@@ -39,6 +39,10 @@ func (h *Jira) FetchIssues(query string) ([]jira.Issue, error) {
 		return nil, fmt.Errorf("failed to search Jira API: %w", err)
 	}
 
+	if len(issues) == 0 {
+		return nil, fmt.Errorf("no issues found for query: %s", query)
+	}
+
 	return issues, nil
 }
 
