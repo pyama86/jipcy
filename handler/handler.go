@@ -87,9 +87,8 @@ func (h *Handler) postError(channelID, userID, message, ts string) {
 			nil, nil,
 		),
 	}
-	if _, err := h.slackClient.PostEphemeral(
+	if _, _, err := h.slackClient.PostMessage(
 		channelID,
-		userID,
 		slack.MsgOptionBlocks(blocks...),
 		slack.MsgOptionTS(ts),
 	); err != nil {
@@ -128,10 +127,9 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 	}
 
 	var lastError error
-	// 虚無に話しかけてるみたいになるのでメッセージを応答する
 	if _, _, err := h.slackClient.PostMessage(
 		channelID,
-		slack.MsgOptionText(":white_check_mark: *お問い合わせを受け付けました！*\n以降はあなただけに返信します。:sparkles:", false),
+		slack.MsgOptionText(":white_check_mark: *お問い合わせを受け付けました！*\nしばらくお待ち下さい。", false),
 		slack.MsgOptionTS(event.TimeStamp),
 	); err != nil {
 		slog.Error("Failed to post message", slog.Any("err", err))
@@ -150,9 +148,8 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 				nil, nil,
 			),
 		}
-		if _, err := h.slackClient.PostEphemeral(
+		if _, _, err := h.slackClient.PostMessage(
 			channelID,
-			userID,
 			slack.MsgOptionBlocks(blocks...),
 			slack.MsgOptionTS(event.TimeStamp),
 		); err != nil {
@@ -181,9 +178,8 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 					nil, nil,
 				),
 			}
-			if _, err := h.slackClient.PostEphemeral(
+			if _, _, err := h.slackClient.PostMessage(
 				channelID,
-				userID,
 				slack.MsgOptionBlocks(blocks...),
 				slack.MsgOptionTS(event.TimeStamp),
 			); err != nil {
@@ -209,9 +205,8 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 	}
 
 	if len(issues) == 0 {
-		if _, err := h.slackClient.PostEphemeral(
+		if _, _, err := h.slackClient.PostMessage(
 			channelID,
-			userID,
 			slack.MsgOptionText(":white_check_mark: *Jira問い合わせ結果*\n該当する問い合わせが見つかりませんでした。", false),
 			slack.MsgOptionTS(event.TimeStamp),
 		); err != nil {
@@ -233,9 +228,8 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 				nil, nil,
 			),
 		}
-		if _, err := h.slackClient.PostEphemeral(
+		if _, _, err := h.slackClient.PostMessage(
 			channelID,
-			userID,
 			slack.MsgOptionBlocks(blocks...),
 			slack.MsgOptionTS(event.TimeStamp),
 		); err != nil {
@@ -254,9 +248,8 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 	}
 
 	if len(selectedIssues) == 0 {
-		if _, err := h.slackClient.PostEphemeral(
+		if _, _, err := h.slackClient.PostMessage(
 			channelID,
-			userID,
 			slack.MsgOptionText(":white_check_mark: *Jira問い合わせ結果*\n類似度の高い問い合わせが見つかりませんでした。", false),
 			slack.MsgOptionTS(event.TimeStamp),
 		); err != nil {
@@ -312,9 +305,8 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 			),
 			slack.NewDividerBlock(),
 		}
-		if _, err := h.slackClient.PostEphemeral(
+		if _, _, err := h.slackClient.PostMessage(
 			channelID,
-			userID,
 			slack.MsgOptionBlocks(blocks...),
 			slack.MsgOptionTS(event.TimeStamp),
 		); err != nil {
