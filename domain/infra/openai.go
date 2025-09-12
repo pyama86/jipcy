@@ -108,23 +108,21 @@ Slackスレッドに含まれるメンションは以下の形式で変換され
 // Jiraの検索クエリを生成する関数
 func (h *OpenAI) GenerateJiraQuery(query string, lastError error) (string, error) {
 	// OpenAI APIを呼び出してJira検索クエリを生成
-	prompt := fmt.Sprintf(`## 依頼内容
+	prompt := fmt.Sprintf(`以下の問い合わせ内容に関連するJira課題を検索するクエリを生成してください。
 
-あなたに渡す問い合わせ内容に関連しそうなJiraの課題を検索するための、検索クエリを生成してください。
-プロジェクトキーは:%sです。
+プロジェクトキー: %s
 
-安定して検索したいので検索ワード以外のオプションは指定しないでください。
-検索クエリについては、より類似な内容にたどり着けるように工夫してください。ヒット件数が多くなりすぎるのも困るので、単語はバラしすぎないでください。AND条件も適宜使ったり、言い回しを変えるなどで、より適切な課題にヒットするように工夫してください。
-
-もしG00000000ような英数字の組み合わせが問い合わせ内容にある場合、エラーコードなどである可能性が高いため、単体でキーワードにしてください。
+要件:
+- 関連性の高い課題を効率的に検索できること
+- エラーコード（G00000000形式）は重要なキーワードとして扱う
+- 2-4個の適切なキーワードを組み合わせる
+- 結果はjson形式でsearch_queryフィールドに出力
 
 %s
-戻り値はjsonのsearch_queryにいれてください。
 
-## 最後に出力されたJIRAのエラー(空白の場合もあり):
-%s
+前回のエラー: %s
 
-## 問い合わせ内容
+問い合わせ内容:
 %s`,
 		os.Getenv("JIRA_PROJECT_KEY"),
 		os.Getenv("JIRA_SEARCH_QUERY"),
@@ -161,21 +159,25 @@ func (h *OpenAI) GenerateJiraQuery(query string, lastError error) (string, error
 // 問い合わせとjiraの関連度を算出する関数
 func (h *OpenAI) CalculateSimilarity(query, contentSummary, slackThreadMessages string) (float64, error) {
 	// 各Jira問い合わせの内容をOpenAIに送り、関連度を算出
-	prompt := fmt.Sprintf(`## 依頼内容
+	prompt := fmt.Sprintf(`以下の2つの課題内容の類似度を0.0-1.0で評価してください。
 
-以下のJira課題の内容は、今私が作成しようとしている課題とどれだけ類似していますか？
+評価基準:
+- 0.3以上: 同じ機能・システムに関する問題
+- 0.5以上: 類似の症状・エラーが発生
+- 0.7以上: ほぼ同じ問題
 
-類似度が0.5以上のものをピックアップしたいので、jsonのsimilariyというfloat型で返却してください
-類似のどの観点はカスターマーサービスのユーザーからの問い合わせで似ている問い合わせであることを観点としてください。
+カスタマーサービスの観点で、ユーザーからの問い合わせの類似性を重視してください。
 
-## 私が作成したい課題の内容(曖昧な場合もある）
+新しい課題:
 %s
 
-## 過去に作成された課題の内容
+既存の課題:
 %s
 
-## 関連するSlackのスレッド
-%s`, query, contentSummary, slackThreadMessages)
+Slackスレッド:
+%s
+
+結果をjsonのsimilarityフィールド（float型）で返してください。`, query, contentSummary, slackThreadMessages)
 
 	response, err := h.client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{

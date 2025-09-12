@@ -69,8 +69,8 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []jira.Issu
 			return nil, fmt.Errorf("failed to get similarity: %w", err)
 		}
 
-		// 類似度が0.5以下のものは削除
-		if similarity < 0.5 {
+		// 類似度が0.3以下のものは削除
+		if similarity < 0.3 {
 			continue
 		}
 
