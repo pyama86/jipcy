@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andygrunwald/go-jira"
 	"github.com/pyama86/jipcy/domain/infra"
 	"github.com/pyama86/jipcy/domain/service"
 	"github.com/slack-go/slack"
@@ -160,7 +159,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 			return
 		}
 	}
-	var issues []jira.Issue
+	var issues []infra.Issue
 	// 2. Jira検索クエリの生成
 	err := retry.Retry(5, 1*time.Second, func() error {
 		jiraQuery, err := h.openAI.GenerateJiraQuery(messageText, lastError)
