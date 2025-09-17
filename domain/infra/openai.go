@@ -114,7 +114,6 @@ func (h *OpenAI) GenerateJiraQuery(query string, lastError error) (string, error
 
 要件:
 - 関連性の高い課題を効率的に検索できること
-- エラーコード（G00000000形式）は重要なキーワードとして扱う
 - 2-4個の適切なキーワードを組み合わせる
 - 結果はjson形式でsearch_queryフィールドに出力
 
