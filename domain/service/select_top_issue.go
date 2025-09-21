@@ -179,12 +179,16 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Iss
 
 // notifyProcessingStart は各Issueの処理開始をSlackに通知する
 func (s *SelectTopIssueService) notifyProcessingStart(issue infra.Issue, channelID, threadTimestamp string) error {
+	// rate limit回避のための短いsleep
+	time.Sleep(200 * time.Millisecond)
 	message := fmt.Sprintf("🔄 処理開始: `%s` - %s", issue.Key, issue.Fields.Summary)
 	return s.slack.PostMessageToThread(channelID, message, threadTimestamp)
 }
 
 // notifyProcessingComplete は各Issueの処理完了をSlackに通知する（類似度付き）
 func (s *SelectTopIssueService) notifyProcessingComplete(issue infra.Issue, similarity float64, channelID, threadTimestamp string) error {
+	// rate limit回避のための短いsleep
+	time.Sleep(200 * time.Millisecond)
 	var message string
 	if similarity < 0.3 {
 		message = fmt.Sprintf("⚪ 処理完了: `%s` - %s (類似度: %.2f - 除外)", issue.Key, issue.Fields.Summary, similarity)
@@ -196,6 +200,8 @@ func (s *SelectTopIssueService) notifyProcessingComplete(issue infra.Issue, simi
 
 // notifyProcessingError は各Issueの処理エラーをSlackに通知する
 func (s *SelectTopIssueService) notifyProcessingError(issue infra.Issue, err error, channelID, threadTimestamp string) error {
+	// rate limit回避のための短いsleep
+	time.Sleep(200 * time.Millisecond)
 	message := fmt.Sprintf("❌ 処理エラー: `%s` - %s (エラー: %v)", issue.Key, issue.Fields.Summary, err)
 	return s.slack.PostMessageToThread(channelID, message, threadTimestamp)
 }
