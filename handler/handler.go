@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 	"github.com/songmu/retry"
+	"golang.org/x/sync/errgroup"
 )
 
 type Handler struct {
@@ -245,7 +247,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 
 	svc := service.NewSelectTopIssueService(h.openAI, h.slack, h.jira)
 	// 6. Jiraの問い合わせから最も類似している3件を選択
-	selectedIssues, err := svc.SelectTopIssues(messageText, issues, channelID)
+	selectedIssues, err := svc.SelectTopIssues(messageText, issues, channelID, event.TimeStamp)
 	if err != nil {
 		slog.Error("Failed to select top issues", slog.Any("err", err))
 		h.postError(channelID, userID, "Jira問い合わせの選択に失敗しました。", event.TimeStamp)
@@ -266,10 +268,41 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 	}
 
 	// 7. 要約生成の実行
-	if err := h.openAI.GenerateSummary(selectedIssues); err != nil {
+	// 要約生成開始通知
+	if _, _, err := h.slackClient.PostMessage(
+		channelID,
+		slack.MsgOptionText("🤖 要約生成を開始します...", false),
+		slack.MsgOptionTS(event.TimeStamp),
+		slack.MsgOptionLinkNames(false),
+	); err != nil {
+		slog.Error("Failed to post summary start message", slog.Any("err", err))
+	}
+
+	// error groupを使用して各Issueの要約を並列生成
+	ctx := context.Background()
+	g, _ := errgroup.WithContext(ctx)
+
+	for i := range selectedIssues {
+		i := i // ループ変数をキャプチャ
+		g.Go(func() error {
+			return h.openAI.GenerateSummaryForIssue(&selectedIssues[i])
+		})
+	}
+
+	if err := g.Wait(); err != nil {
 		slog.Error("Failed to generate summary", slog.Any("err", err))
 		h.postError(channelID, userID, "Jira問い合わせの要約生成に失敗しました。", event.TimeStamp)
 		return
+	}
+
+	// 要約生成完了通知
+	if _, _, err := h.slackClient.PostMessage(
+		channelID,
+		slack.MsgOptionText("✅ 要約生成が完了しました！", false),
+		slack.MsgOptionTS(event.TimeStamp),
+		slack.MsgOptionLinkNames(false),
+	); err != nil {
+		slog.Error("Failed to post summary complete message", slog.Any("err", err))
 	}
 
 	for _, issue := range selectedIssues {

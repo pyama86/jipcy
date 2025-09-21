@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/azure"
 	"github.com/openai/openai-go/option"
 	"github.com/pyama86/jipcy/domain/model"
+	"github.com/songmu/retry"
 )
 
 type OpenAI struct {
@@ -62,8 +64,10 @@ func newAzureClient() (*openai.Client, error) {
 	), nil
 }
 
-func (h *OpenAI) GenerateSummary(issues []model.Result) error {
-	for i, issue := range issues {
+// GenerateSummaryForIssue は単一のIssueに対して要約を生成する（goroutine対応・retry機能付き）
+func (h *OpenAI) GenerateSummaryForIssue(issue *model.Result) error {
+	// retry機能付きで要約生成を実行
+	return retry.Retry(3, 3*time.Second, func() error {
 		prompt := fmt.Sprintf(`## 依頼内容
 以下のJiraの課題の内容と、その課題の解決方法(主にコメントとして記載されている)の結果をサマリとして自然言語で返答してください。
 あなたが作成した結果の用途は新しく課題をjiraに作成するかどうかを判断するためなので簡潔に類似かどうか判断できる材料をください。
@@ -100,9 +104,9 @@ Slackスレッドに含まれるメンションは以下の形式で変換され
 			return fmt.Errorf("failed to call OpenAI API: %w", err)
 		}
 
-		issues[i].GeneratedSummary = response.Choices[0].Message.Content
-	}
-	return nil
+		issue.GeneratedSummary = response.Choices[0].Message.Content
+		return nil
+	})
 }
 
 // Jiraの検索クエリを生成する関数

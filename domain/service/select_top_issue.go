@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"github.com/pyama86/jipcy/domain/infra"
 	"github.com/pyama86/jipcy/domain/model"
 	"github.com/songmu/retry"
+	"golang.org/x/sync/errgroup"
 )
 
 type SelectTopIssueService struct {
@@ -47,7 +49,7 @@ func formatIssue(issue infra.Issue) string {
 }
 
 // Jiraの問い合わせから最も類似している3件を選択する関数（並列化版）
-func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Issue, channelID string) ([]model.Result, error) {
+func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Issue, channelID, threadTimestamp string) ([]model.Result, error) {
 	if len(issues) == 0 {
 		return []model.Result{}, nil
 	}
@@ -55,29 +57,31 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Iss
 	jiraendpoint := strings.TrimSuffix(os.Getenv("JIRA_ENDPOINT"), "/")
 	workspaceURL := os.Getenv("SLACK_WORKSPACE_URL")
 
-	// 結果を格納するためのチャンネル
-	type processResult struct {
-		result model.Result
-		index  int
-		err    error
-	}
+	// 結果を格納するためのスライス
+	results := make([]model.Result, len(issues))
+	var mu sync.Mutex
 
-	resultCh := make(chan processResult, len(issues))
-	var wg sync.WaitGroup
+	// エラーグループを使用して並列処理
+	ctx := context.Background()
+	g, _ := errgroup.WithContext(ctx)
 
 	// 各issueを並列で処理
 	for i, issue := range issues {
-		wg.Add(1)
-		go func(idx int, iss infra.Issue) {
-			defer wg.Done()
+		i, issue := i, issue // ループ変数をキャプチャ
+		g.Go(func() error {
+
+			// Slack通知: 処理開始
+			if err := s.notifyProcessingStart(issue, channelID, threadTimestamp); err != nil {
+				// 通知エラーはログに記録するが処理は継続
+				fmt.Printf("Failed to notify processing start for issue %s: %v\n", issue.Key, err)
+			}
 
 			// リトライ機能付きで処理
 			var result model.Result
-			var processingErr error
 
-			retryErr := retry.Retry(3, 1*time.Second, func() error {
-				contentSummary := formatIssue(iss)
-				jiraURL := fmt.Sprintf("%s/browse/%s", jiraendpoint, iss.Key)
+			retryErr := retry.Retry(3, 3*time.Second, func() error {
+				contentSummary := formatIssue(issue)
+				jiraURL := fmt.Sprintf("%s/browse/%s", jiraendpoint, issue.Key)
 
 				// Slack検索
 				threads, err := s.slack.SearchThreads(jiraURL, channelID)
@@ -104,9 +108,9 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Iss
 
 				// 結果を構築
 				result = model.Result{
-					ID:             iss.ID,
-					Summary:        iss.Fields.Summary,
-					Description:    iss.GetDescription(),
+					ID:             issue.ID,
+					Summary:        issue.Fields.Summary,
+					Description:    issue.GetDescription(),
 					URL:            jiraURL,
 					ContentSummary: contentSummary,
 					Similarity:     similarity,
@@ -121,41 +125,44 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Iss
 			})
 
 			if retryErr != nil {
-				processingErr = retryErr
+				// リトライエラーの場合はSlack通知のみ行い、エラー扱いにしない
+				if err := s.notifyProcessingError(issue, retryErr, channelID, threadTimestamp); err != nil {
+					fmt.Printf("Failed to notify processing error for issue %s: %v\n", issue.Key, err)
+				}
+				// 空の結果を設定して処理を継続
+				result = model.Result{}
 			}
 
-			// 結果をチャンネルに送信
-			resultCh <- processResult{
-				result: result,
-				index:  idx,
-				err:    processingErr,
+			// Slack通知: 処理完了（類似度と共に）
+			if err := s.notifyProcessingComplete(issue, result.Similarity, channelID, threadTimestamp); err != nil {
+				// 通知エラーはログに記録するが処理は継続
+				fmt.Printf("Failed to notify processing complete for issue %s: %v\n", issue.Key, err)
 			}
-		}(i, issue)
+
+			// 結果を格納
+			mu.Lock()
+			results[i] = result
+			mu.Unlock()
+
+			return nil
+		})
 	}
 
 	// 全てのgoroutineの完了を待つ
-	wg.Wait()
-	close(resultCh)
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("error processing issues: %w", err)
+	}
 
-	// 結果を収集
+	// 結果を収集（空の結果は除外）
 	var convIssues []model.Result
-	var errors []error
-
-	for res := range resultCh {
-		if res.err != nil {
-			errors = append(errors, fmt.Errorf("issue index %d: %w", res.index, res.err))
-			continue
-		}
-
-		// 空の結果（類似度0.3以下）はスキップ
-		if res.result.ID != "" {
-			convIssues = append(convIssues, res.result)
+	for _, result := range results {
+		if result.ID != "" {
+			convIssues = append(convIssues, result)
 		}
 	}
 
-	// 一部のエラーは許容するが、全てエラーの場合は失敗とする
-	if len(errors) > 0 && len(convIssues) == 0 {
-		return nil, fmt.Errorf("all issues failed to process: %v", errors)
+	if len(convIssues) == 0 {
+		return []model.Result{}, nil
 	}
 
 	// 類似度でソート
@@ -168,4 +175,27 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Iss
 		return convIssues, nil
 	}
 	return convIssues[:5], nil
+}
+
+// notifyProcessingStart は各Issueの処理開始をSlackに通知する
+func (s *SelectTopIssueService) notifyProcessingStart(issue infra.Issue, channelID, threadTimestamp string) error {
+	message := fmt.Sprintf("🔄 処理開始: `%s` - %s", issue.Key, issue.Fields.Summary)
+	return s.slack.PostMessageToThread(channelID, message, threadTimestamp)
+}
+
+// notifyProcessingComplete は各Issueの処理完了をSlackに通知する（類似度付き）
+func (s *SelectTopIssueService) notifyProcessingComplete(issue infra.Issue, similarity float64, channelID, threadTimestamp string) error {
+	var message string
+	if similarity < 0.3 {
+		message = fmt.Sprintf("⚪ 処理完了: `%s` - %s (類似度: %.2f - 除外)", issue.Key, issue.Fields.Summary, similarity)
+	} else {
+		message = fmt.Sprintf("✅ 処理完了: `%s` - %s (類似度: %.2f)", issue.Key, issue.Fields.Summary, similarity)
+	}
+	return s.slack.PostMessageToThread(channelID, message, threadTimestamp)
+}
+
+// notifyProcessingError は各Issueの処理エラーをSlackに通知する
+func (s *SelectTopIssueService) notifyProcessingError(issue infra.Issue, err error, channelID, threadTimestamp string) error {
+	message := fmt.Sprintf("❌ 処理エラー: `%s` - %s (エラー: %v)", issue.Key, issue.Fields.Summary, err)
+	return s.slack.PostMessageToThread(channelID, message, threadTimestamp)
 }
