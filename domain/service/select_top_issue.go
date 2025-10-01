@@ -11,21 +11,24 @@ import (
 
 	"github.com/pyama86/jipcy/domain/infra"
 	"github.com/pyama86/jipcy/domain/model"
+	"github.com/slack-go/slack"
 	"github.com/songmu/retry"
 	"golang.org/x/sync/errgroup"
 )
 
 type SelectTopIssueService struct {
-	openAI *infra.OpenAI
-	slack  *infra.Slack
-	jira   *infra.Jira
+	openAI      *infra.OpenAI
+	slack       *infra.Slack
+	jira        *infra.Jira
+	slackClient *slack.Client
 }
 
-func NewSelectTopIssueService(openAI *infra.OpenAI, slack *infra.Slack, jira *infra.Jira) *SelectTopIssueService {
+func NewSelectTopIssueService(openAI *infra.OpenAI, slackInfra *infra.Slack, jira *infra.Jira, slackClient *slack.Client) *SelectTopIssueService {
 	return &SelectTopIssueService{
-		openAI: openAI,
-		slack:  slack,
-		jira:   jira,
+		openAI:      openAI,
+		slack:       slackInfra,
+		jira:        jira,
+		slackClient: slackClient,
 	}
 }
 
@@ -182,7 +185,13 @@ func (s *SelectTopIssueService) notifyProcessingStart(issue infra.Issue, channel
 	// rate limit回避のための短いsleep
 	time.Sleep(200 * time.Millisecond)
 	message := fmt.Sprintf("🔄 処理開始: `%s` - %s", issue.Key, issue.Fields.Summary)
-	return s.slack.PostMessageToThread(channelID, message, threadTimestamp)
+	_, _, err := s.slackClient.PostMessage(
+		channelID,
+		slack.MsgOptionText(message, false),
+		slack.MsgOptionTS(threadTimestamp),
+		slack.MsgOptionLinkNames(false),
+	)
+	return err
 }
 
 // notifyProcessingComplete は各Issueの処理完了をSlackに通知する（類似度付き）
@@ -195,7 +204,13 @@ func (s *SelectTopIssueService) notifyProcessingComplete(issue infra.Issue, simi
 	} else {
 		message = fmt.Sprintf("✅ 処理完了: `%s` - %s (類似度: %.2f)", issue.Key, issue.Fields.Summary, similarity)
 	}
-	return s.slack.PostMessageToThread(channelID, message, threadTimestamp)
+	_, _, err := s.slackClient.PostMessage(
+		channelID,
+		slack.MsgOptionText(message, false),
+		slack.MsgOptionTS(threadTimestamp),
+		slack.MsgOptionLinkNames(false),
+	)
+	return err
 }
 
 // notifyProcessingError は各Issueの処理エラーをSlackに通知する
@@ -203,5 +218,11 @@ func (s *SelectTopIssueService) notifyProcessingError(issue infra.Issue, err err
 	// rate limit回避のための短いsleep
 	time.Sleep(200 * time.Millisecond)
 	message := fmt.Sprintf("❌ 処理エラー: `%s` - %s (エラー: %v)", issue.Key, issue.Fields.Summary, err)
-	return s.slack.PostMessageToThread(channelID, message, threadTimestamp)
+	_, _, postErr := s.slackClient.PostMessage(
+		channelID,
+		slack.MsgOptionText(message, false),
+		slack.MsgOptionTS(threadTimestamp),
+		slack.MsgOptionLinkNames(false),
+	)
+	return postErr
 }

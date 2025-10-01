@@ -403,13 +403,3 @@ func (h *Slack) PostMessage(channelID, message string) error {
 	_, _, err := h.client.PostMessage(channelID, slack.MsgOptionText(message, false))
 	return err
 }
-
-// PostMessageToThread はSlackチャンネルのスレッドにメッセージを投稿する
-func (h *Slack) PostMessageToThread(channelID, message, threadTimestamp string) error {
-	_, _, err := h.client.PostMessage(
-		channelID,
-		slack.MsgOptionText(message, false),
-		slack.MsgOptionTS(threadTimestamp),
-	)
-	return err
-}

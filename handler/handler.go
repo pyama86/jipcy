@@ -245,7 +245,7 @@ func (h *Handler) handleMention(event *slackevents.AppMentionEvent) {
 		}
 	}
 
-	svc := service.NewSelectTopIssueService(h.openAI, h.slack, h.jira)
+	svc := service.NewSelectTopIssueService(h.openAI, h.slack, h.jira, h.slackClient)
 	// 6. Jiraの問い合わせから最も類似している3件を選択
 	selectedIssues, err := svc.SelectTopIssues(messageText, issues, channelID, event.TimeStamp)
 	if err != nil {
