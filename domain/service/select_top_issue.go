@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/slack-go/slack"
 	"github.com/songmu/retry"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 )
 
 type SelectTopIssueService struct {
@@ -23,12 +25,55 @@ type SelectTopIssueService struct {
 	slackClient *slack.Client
 }
 
+// 通知メッセージの構造体
+type notificationMessage struct {
+	message         string
+	channelID       string
+	threadTimestamp string
+}
+
 func NewSelectTopIssueService(openAI *infra.OpenAI, slackInfra *infra.Slack, jira *infra.Jira, slackClient *slack.Client) *SelectTopIssueService {
 	return &SelectTopIssueService{
 		openAI:      openAI,
 		slack:       slackInfra,
 		jira:        jira,
 		slackClient: slackClient,
+	}
+}
+
+// 通知を順次送信するworker
+func (s *SelectTopIssueService) notificationWorker(ctx context.Context, notifyCh <-chan notificationMessage, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	// rate limitを考慮した間隔で通知を送信
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("Notification worker stopped by context cancellation")
+			return
+		case msg, ok := <-notifyCh:
+			if !ok {
+				slog.Info("Notification worker stopped: channel closed")
+				return
+			}
+			// rate limitを考慮して送信
+			<-ticker.C
+			_, _, err := s.slackClient.PostMessage(
+				msg.channelID,
+				slack.MsgOptionText(msg.message, false),
+				slack.MsgOptionTS(msg.threadTimestamp),
+				slack.MsgOptionLinkNames(false),
+			)
+			if err != nil {
+				// 通知失敗時はログに記録するが、処理は継続
+				slog.Error("Failed to send notification (processing will continue)",
+					slog.String("message", msg.message),
+					slog.Any("error", err))
+			}
+		}
 	}
 }
 
@@ -64,23 +109,34 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Iss
 	results := make([]model.Result, len(issues))
 	var mu sync.Mutex
 
-	// エラーグループを使用して並列処理
+	// 通知用のチャンネルとworkerを起動
 	ctx := context.Background()
-	g, _ := errgroup.WithContext(ctx)
+	notifyCh := make(chan notificationMessage, 100)
+	var notifyWg sync.WaitGroup
+	notifyWg.Add(1)
+	go s.notificationWorker(ctx, notifyCh, &notifyWg)
+
+	// エラーグループを使用して並列処理（セマフォで並列度を制限）
+	const maxConcurrency = 5
+	sem := semaphore.NewWeighted(maxConcurrency)
+	g, gctx := errgroup.WithContext(ctx)
 
 	// 各issueを並列で処理
 	for i, issue := range issues {
 		i, issue := i, issue // ループ変数をキャプチャ
 		g.Go(func() error {
-
-			// Slack通知: 処理開始
-			if err := s.notifyProcessingStart(issue, channelID, threadTimestamp); err != nil {
-				// 通知エラーはログに記録するが処理は継続
-				fmt.Printf("Failed to notify processing start for issue %s: %v\n", issue.Key, err)
+			// セマフォを取得（並列度を制限）
+			if err := sem.Acquire(gctx, 1); err != nil {
+				return err
 			}
+			defer sem.Release(1)
+
+			// 処理開始のログ出力
+			slog.Info("Issue processing started", slog.String("issue_key", issue.Key), slog.String("summary", issue.Fields.Summary))
 
 			// リトライ機能付きで処理
 			var result model.Result
+			startTime := time.Now()
 
 			retryErr := retry.Retry(3, 3*time.Second, func() error {
 				contentSummary := formatIssue(issue)
@@ -127,19 +183,44 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Iss
 				return nil
 			})
 
+			duration := time.Since(startTime)
+
 			if retryErr != nil {
+				// エラーログ出力
+				slog.Error("Issue processing failed",
+					slog.String("issue_key", issue.Key),
+					slog.String("summary", issue.Fields.Summary),
+					slog.Duration("duration", duration),
+					slog.Any("error", retryErr))
+
 				// リトライエラーの場合はSlack通知のみ行い、エラー扱いにしない
-				if err := s.notifyProcessingError(issue, retryErr, channelID, threadTimestamp); err != nil {
-					fmt.Printf("Failed to notify processing error for issue %s: %v\n", issue.Key, err)
+				notifyCh <- notificationMessage{
+					message:         fmt.Sprintf("❌ 処理エラー: `%s` - %s (エラー: %v)", issue.Key, issue.Fields.Summary, retryErr),
+					channelID:       channelID,
+					threadTimestamp: threadTimestamp,
 				}
 				// 空の結果を設定して処理を継続
 				result = model.Result{}
 			}
 
+			// 処理完了のログ出力
+			slog.Info("Issue processing completed",
+				slog.String("issue_key", issue.Key),
+				slog.String("summary", issue.Fields.Summary),
+				slog.Float64("similarity", result.Similarity),
+				slog.Duration("duration", duration))
+
 			// Slack通知: 処理完了（類似度と共に）
-			if err := s.notifyProcessingComplete(issue, result.Similarity, channelID, threadTimestamp); err != nil {
-				// 通知エラーはログに記録するが処理は継続
-				fmt.Printf("Failed to notify processing complete for issue %s: %v\n", issue.Key, err)
+			var completeMsg string
+			if result.Similarity < 0.3 {
+				completeMsg = fmt.Sprintf("⚪ 処理完了: `%s` - %s (類似度: %.2f - 除外)", issue.Key, issue.Fields.Summary, result.Similarity)
+			} else {
+				completeMsg = fmt.Sprintf("✅ 処理完了: `%s` - %s (類似度: %.2f)", issue.Key, issue.Fields.Summary, result.Similarity)
+			}
+			notifyCh <- notificationMessage{
+				message:         completeMsg,
+				channelID:       channelID,
+				threadTimestamp: threadTimestamp,
 			}
 
 			// 結果を格納
@@ -153,8 +234,14 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Iss
 
 	// 全てのgoroutineの完了を待つ
 	if err := g.Wait(); err != nil {
+		close(notifyCh)
+		notifyWg.Wait()
 		return nil, fmt.Errorf("error processing issues: %w", err)
 	}
+
+	// 通知チャンネルを閉じてworkerの終了を待つ
+	close(notifyCh)
+	notifyWg.Wait()
 
 	// 結果を収集（空の結果は除外）
 	var convIssues []model.Result
@@ -178,51 +265,4 @@ func (s *SelectTopIssueService) SelectTopIssues(query string, issues []infra.Iss
 		return convIssues, nil
 	}
 	return convIssues[:5], nil
-}
-
-// notifyProcessingStart は各Issueの処理開始をSlackに通知する
-func (s *SelectTopIssueService) notifyProcessingStart(issue infra.Issue, channelID, threadTimestamp string) error {
-	// rate limit回避のための短いsleep
-	time.Sleep(200 * time.Millisecond)
-	message := fmt.Sprintf("🔄 処理開始: `%s` - %s", issue.Key, issue.Fields.Summary)
-	_, _, err := s.slackClient.PostMessage(
-		channelID,
-		slack.MsgOptionText(message, false),
-		slack.MsgOptionTS(threadTimestamp),
-		slack.MsgOptionLinkNames(false),
-	)
-	return err
-}
-
-// notifyProcessingComplete は各Issueの処理完了をSlackに通知する（類似度付き）
-func (s *SelectTopIssueService) notifyProcessingComplete(issue infra.Issue, similarity float64, channelID, threadTimestamp string) error {
-	// rate limit回避のための短いsleep
-	time.Sleep(200 * time.Millisecond)
-	var message string
-	if similarity < 0.3 {
-		message = fmt.Sprintf("⚪ 処理完了: `%s` - %s (類似度: %.2f - 除外)", issue.Key, issue.Fields.Summary, similarity)
-	} else {
-		message = fmt.Sprintf("✅ 処理完了: `%s` - %s (類似度: %.2f)", issue.Key, issue.Fields.Summary, similarity)
-	}
-	_, _, err := s.slackClient.PostMessage(
-		channelID,
-		slack.MsgOptionText(message, false),
-		slack.MsgOptionTS(threadTimestamp),
-		slack.MsgOptionLinkNames(false),
-	)
-	return err
-}
-
-// notifyProcessingError は各Issueの処理エラーをSlackに通知する
-func (s *SelectTopIssueService) notifyProcessingError(issue infra.Issue, err error, channelID, threadTimestamp string) error {
-	// rate limit回避のための短いsleep
-	time.Sleep(200 * time.Millisecond)
-	message := fmt.Sprintf("❌ 処理エラー: `%s` - %s (エラー: %v)", issue.Key, issue.Fields.Summary, err)
-	_, _, postErr := s.slackClient.PostMessage(
-		channelID,
-		slack.MsgOptionText(message, false),
-		slack.MsgOptionTS(threadTimestamp),
-		slack.MsgOptionLinkNames(false),
-	)
-	return postErr
 }
